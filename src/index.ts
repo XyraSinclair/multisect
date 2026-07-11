@@ -1,9 +1,9 @@
 /*
  * Three path families compute every operation: nested (the quadratic
  * reference), map (hash-based, for general inputs past the tiny cutoff),
- * and sorted (allocation-light merges behind the `sorted` assertion).
- * They must be observably identical; the public API at the bottom only
- * dispatches. DESIGN.md carries the correctness argument.
+ * and sorted (hash-free merges behind the `sorted` assertion). They must
+ * be observably identical; the public API at the bottom only dispatches.
+ * DESIGN.md carries the correctness argument.
  */
 
 /** Options shared by every binary operation. */

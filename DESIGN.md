@@ -111,9 +111,10 @@ need not be contiguous in a validly ascending array, and the merge would
 skip runs (caught in review round 2). Worse, which order a key joins
 follows from its ToPrimitive result, not its typeof: arrays stringify, so
 with `x = [10]` the chain `x < [2] < 3 < x` cycles with no string key
-anywhere (caught in the beautification pass — it evaded the original
-typeof-based gate). Symbols are a last corner in the same wall: `<` throws
-on them, and a singleton smuggles one past any adjacency check.
+anywhere — it evaded the original typeof-based gate and survived three
+review rounds before a fourth caught it. Symbols are one more corner of
+the same wall: `<` throws on them, and a singleton smuggles one past any
+adjacency check.
 
 The up-front witness scan therefore classifies each key's comparison mode:
 lexical (strings), numeric (numbers, bigints, booleans, `null`,
