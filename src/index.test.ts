@@ -401,6 +401,54 @@ describe('edge contracts', () => {
         expect(union([3, '10'], ['10', '2', 3], { sorted: true })).toEqual([3, '10', '2'])
     })
 
+    it('falls back on cycles built without string keys: arrays stringify under <', () => {
+        // `<` assigns comparison modes by ToPrimitive result, not typeof.
+        // Arrays stringify, so with x = [10] the chain x < [2] < 3 < x is a
+        // genuine cycle containing no string key: '10' < '2' lexically,
+        // 2 < 3 and 3 < 10 numerically. Every input below is validly
+        // pairwise-ascending, and no adjacent pair is incomparable.
+        const x = [10]
+        const a = [x, [2], 3, x]
+        const b = [3, x]
+        const c = [x, [2], 3]
+        const cases: [unknown[], unknown[]][] = [
+            [a, []],
+            [b, c],
+        ]
+        for (const [p, q] of cases) {
+            for (const multiset of [false, true]) {
+                const plain = { multiset }
+                const sorted = { multiset, sorted: true }
+                expectSameArray(intersection(p, q, sorted), intersection(p, q, plain))
+                expectSameArray(difference(p, q, sorted), difference(p, q, plain))
+                expectSameArray(symmetricDifference(p, q, sorted), symmetricDifference(p, q, plain))
+                expectSameArray(union(p, q, sorted), union(p, q, plain))
+                expect(isSubset(p, q, sorted)).toBe(isSubset(p, q, plain))
+                expect(contentsEqual(p, q, sorted)).toBe(contentsEqual(p, q, plain))
+            }
+        }
+        // The corrected corners, pinned exactly:
+        expectSameArray(difference(a, [], { sorted: true }), a.slice(0, 3))
+        expect(isSubset(b, c, { sorted: true })).toBe(true)
+        expectSameArray(union(b, c, { sorted: true }), [3, x, c[1]])
+    })
+
+    it('routes symbol keys to the reference path instead of throwing', () => {
+        // A singleton vacuously satisfies "ascends under <", yet `<` throws
+        // on any symbol comparison. Mode-opaque keys never reach the merge.
+        const s = Symbol('k')
+        for (const multiset of [false, true]) {
+            const plain = { multiset }
+            const sorted = { multiset, sorted: true }
+            expectSameArray(intersection([s], [1], sorted), intersection([s], [1], plain))
+            expectSameArray(difference([s], [1], sorted), difference([s], [1], plain))
+            expectSameArray(union([s], [1], sorted), union([s], [1], plain))
+            expect(isSubset([s], [1], sorted)).toBe(isSubset([s], [1], plain))
+            expect(contentsEqual([s, s], [s], sorted)).toBe(contentsEqual([s, s], [s], plain))
+        }
+        expectSameArray(intersection([s], [1], { sorted: true }), [])
+    })
+
     it('sorted paths match unsorted paths across mixed-type valid-ascending fuzz', () => {
         // Seeded LCG; the pool interleaves numbers and strings so pairwise-
         // ascending sequences with cross-array incomparable pairs are common.

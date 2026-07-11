@@ -372,13 +372,18 @@ function mapUnique(a: readonly unknown[], keyOf: Keyer): unknown[] {
  *   3 vs '3'). Cheap to catch — lacksMergeOrder rejects adjacent
  *   incomparable keys before the merge, and compareKeys returns 0 for any
  *   cross-array pair met during it, refuting the merge from inside.
- * - Cycles: strings compare lexically, everything else numerically, and
- *   the two orders can disagree — '10' < '2' (lexical), '2' < 3 and
- *   3 < '10' (numeric). Every pairwise verdict is decisive, so nothing
- *   can refute mid-merge; equal keys simply stop being contiguous and the
- *   merge would skip runs. A cycle needs both orders at once, so
- *   lacksMergeOrder refuses any mix of string and non-string keys across
- *   the two streams.
+ * - Cycles: `<` compares two strings lexically and everything else
+ *   numerically, and the two orders can disagree — '10' < '2' (lexical),
+ *   '2' < 3 and 3 < '10' (numeric). Every pairwise verdict is decisive,
+ *   so nothing can refute mid-merge; equal keys simply stop being
+ *   contiguous and the merge would skip runs. A cycle needs both orders
+ *   at once, so lacksMergeOrder refuses any lexical/numeric mixture
+ *   across the two streams. Which order a key joins follows from its
+ *   ToPrimitive result, not its typeof: arrays stringify, so with
+ *   x = [10] the chain x < [2] < 3 < x cycles with no string in sight.
+ *   Objects, functions, and symbols (which `<` cannot compare at all)
+ *   therefore refuse the merge outright — their mode has no cheap
+ *   certificate. Primitive keys in a single mode are cycle-free.
  *
  * Every sorted operation has the same shape: refuse up front what can be
  * refused cheaply, attempt the merge (null means it refuted itself), and
@@ -396,36 +401,50 @@ function compareKeys(a: unknown, b: unknown): -1 | 0 | 1 {
     return 0
 }
 
-/* One key stream of the witness scan: returns true on an adjacent pair
- * that is neither SameValueZero-equal nor ordered under `<`, and records
- * which comparison modes appeared, for the cycle check. */
-function scanKeyStream(
-    a: readonly unknown[],
-    keyOf: Keyer,
-    seen: { str: boolean; nonStr: boolean }
-): boolean {
+type SeenModes = { lexical: boolean; numeric: boolean }
+
+/* Records the comparison mode `<` will use for a key; true means the mode
+ * has no cheap certificate (objects, functions, symbols) and the merge
+ * must be refused. null is primitive and converts numerically. */
+function recordMode(key: unknown, seen: SeenModes): boolean {
+    const t = typeof key
+    if (t === 'number' || t === 'bigint' || t === 'boolean' || t === 'undefined' || key === null) {
+        seen.numeric = true
+        return false
+    }
+    if (t === 'string') {
+        seen.lexical = true
+        return false
+    }
+    return true
+}
+
+/* One key stream of the witness scan: returns true on a mode-opaque key
+ * or an adjacent pair that is neither SameValueZero-equal nor ordered
+ * under `<`; records which comparison modes appeared, for the cycle
+ * check. */
+function scanKeyStream(a: readonly unknown[], keyOf: Keyer, seen: SeenModes): boolean {
     if (a.length === 0) return false
     let previous = keyOf(a[0])
-    if (typeof previous === 'string') seen.str = true
-    else seen.nonStr = true
+    if (recordMode(previous, seen)) return true
     for (let i = 1; i < a.length; i++) {
         const current = keyOf(a[i])
-        if (typeof current === 'string') seen.str = true
-        else seen.nonStr = true
+        if (recordMode(current, seen)) return true
         if (!sameValueZero(previous, current) && compareKeys(previous, current) === 0) return true
         previous = current
     }
     return false
 }
 
-/* The up-front half of the witness: adjacent incomparability and the
- * cycle-capable mode mixture. Cross-array incomparability stays invisible
- * here; the merges refute that themselves. */
+/* The up-front half of the witness: mode-opaque keys, adjacent
+ * incomparability, and the cycle-capable mode mixture. Cross-array
+ * incomparability stays invisible here; the merges refute that
+ * themselves. */
 function lacksMergeOrder(a: readonly unknown[], b: readonly unknown[], keyOf: Keyer): boolean {
-    const seen = { str: false, nonStr: false }
+    const seen: SeenModes = { lexical: false, numeric: false }
     if (scanKeyStream(a, keyOf, seen)) return true
     if (scanKeyStream(b, keyOf, seen)) return true
-    return seen.str && seen.nonStr
+    return seen.lexical && seen.numeric
 }
 
 function runEnd(a: readonly unknown[], start: number, key: unknown, keyOf: Keyer): number {
