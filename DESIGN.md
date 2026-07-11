@@ -53,12 +53,12 @@ Silicon produced:
 
 | n × n | pair work | nested scan | Set path | faster |
 |---:|---:|---:|---:|---|
-| 8 × 8 | 64 | 0.075µs | 0.104µs | nested |
-| 12 × 12 | 144 | 0.180µs | 0.203µs | nested |
-| 14 × 14 | 196 | 0.236µs | 0.219µs | Set |
-| 16 × 16 | 256 | 0.296µs | 0.239µs | Set |
-| 20 × 20 | 400 | 0.440µs | 0.359µs | Set |
-| 24 × 24 | 576 | 0.629µs | 0.464µs | Set |
+| 8 × 8 | 64 | 0.031µs | 0.087µs | nested |
+| 12 × 12 | 144 | 0.151µs | 0.168µs | nested |
+| 14 × 14 | 196 | 0.202µs | 0.187µs | Set |
+| 16 × 16 | 256 | 0.245µs | 0.197µs | Set |
+| 20 × 20 | 400 | 0.372µs | 0.372µs | Set |
+| 24 × 24 | 576 | 0.556µs | 0.346µs | Set |
 
 The cutoff is therefore `a.length * b.length <= 160`. Duplicate-heavy inputs
 favor nested scans beyond that boundary, but choosing the conservative
