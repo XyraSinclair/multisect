@@ -1,7 +1,7 @@
 # multisect
 
 Set-theoretic operations on arrays, with counted multiset semantics and
-allocation-free merge paths for already-sorted inputs. Results have explicit
+hash-free merge paths for already-sorted inputs. Results have explicit
 order, count, and provenance contracts.
 
 ```ts
@@ -57,11 +57,12 @@ Element order and provenance are fixed:
 - `sorted: true` asserts that both inputs ascend under `<` on their values, or
   on keys from `by`. The merge paths produce results **identical** to the
   unsorted paths on sorted inputs. multisect never mutates, copies-and-sorts,
-  or silently repairs an input. One consequence to know: mixing string keys
-  with non-string keys forfeits the merge path — JavaScript `<` can form
-  comparison cycles across its lexical and numeric modes (`'10' < '2' < 3 <
-  '10'`), so such inputs are routed to a correct but quadratic reference
-  path. Keep sorted keys single-typed for the fast merge.
+  or silently repairs an input. One consequence to know: JavaScript `<`
+  compares in a lexical mode and a numeric mode, and can form cycles when
+  both appear (`'10' < '2' < 3 < '10'`); object keys can reach either mode.
+  Mixing the modes, or using non-primitive keys, forfeits the merge — such
+  inputs are routed to a correct but quadratic reference path. Keep sorted
+  keys all-strings or all-numbers for the fast merge.
 
 Sparse-array holes are read as `undefined`, exactly like indexed access and
 array iteration. Inputs may be readonly. A `by` function is expected to return
@@ -69,8 +70,8 @@ a stable key for an element during one call.
 
 ## Performance
 
-Microseconds per call on Node 24.13.1, Apple Silicon; lower is better. These
-are real results from `npm run bench`. The script checks like-for-like outputs
+Microseconds per call on Node 24.13.1, Apple Silicon; lower is better;
+reproduce with `npm run bench`. The script checks like-for-like outputs
 before timing, prints the full 32-row matrix, and skips the quadratic naive
 implementation at 100k rather than waiting on a misleading run.
 
@@ -144,7 +145,7 @@ pool, then cross-checks thousands of seeded arrays against deliberately simple
 quadratic oracles. The suite includes identity objects, `by` collisions,
 NaN/signed zero, holes, all-duplicate arrays, readonly/type assertions,
 subsequence invariants, and sorted-vs-unsorted differential properties. Every
-PR runs tests and the TypeScript build on Node 22 and 24.
+PR runs tests and the TypeScript build on Node 18, 22, and 24.
 
 ## License
 
