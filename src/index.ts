@@ -361,11 +361,33 @@ function mapUnique(a: readonly unknown[], keyOf: Keyer): unknown[] {
 /*
  * Sorted merge paths — run-based two-pointer walks behind the `sorted`
  * assertion. No Map or Set; the result array is the only allocation.
+ *
+ * THE MERGE-ORDER WITNESS. Beyond ascending inputs, a merge needs `<` to
+ * behave as a strict total order, up to SameValueZero, on the keys present:
+ * that is what makes equal keys contiguous runs and head comparisons
+ * decisive about everything that follows. JavaScript `<` can fail to
+ * provide such an order in two ways:
+ *
+ * - Incomparability: no verdict either way (NaN, distinct plain objects,
+ *   3 vs '3'). Cheap to catch — lacksMergeOrder rejects adjacent
+ *   incomparable keys before the merge, and compareKeys returns 0 for any
+ *   cross-array pair met during it, refuting the merge from inside.
+ * - Cycles: strings compare lexically, everything else numerically, and
+ *   the two orders can disagree — '10' < '2' (lexical), '2' < 3 and
+ *   3 < '10' (numeric). Every pairwise verdict is decisive, so nothing
+ *   can refute mid-merge; equal keys simply stop being contiguous and the
+ *   merge would skip runs. A cycle needs both orders at once, so
+ *   lacksMergeOrder refuses any mix of string and non-string keys across
+ *   the two streams.
+ *
+ * Every sorted operation has the same shape: refuse up front what can be
+ * refused cheaply, attempt the merge (null means it refuted itself), and
+ * fall back to the nested reference path, which never consults `<`.
  */
 
-/* `0` means comparison-equivalent. The caller checks SameValueZero first, so
- * `0` can also expose values (NaN, distinct objects, 3 and '3') for which `<`
- * does not provide a usable merge order. */
+/* `0` is "comparison-equivalent": the pair is SameValueZero-equal, or `<`
+ * refuses to order it either way. Merges test SameValueZero first, so a
+ * `0` seen after that test refutes the merge order. */
 function compareKeys(a: unknown, b: unknown): -1 | 0 | 1 {
     if (sameValueZero(a, b)) return 0
     // The sorted contract explicitly asserts comparability under `<`.
@@ -374,10 +396,10 @@ function compareKeys(a: unknown, b: unknown): -1 | 0 | 1 {
     return 0
 }
 
-/* Scans one array's keys: returns true on an adjacent pair that is neither
- * SameValueZero-equal nor ordered under `<`, and records whether string and
- * non-string keys were seen (for the cross-stream type-mix gate below). */
-function scanSortedKeys(
+/* One key stream of the witness scan: returns true on an adjacent pair
+ * that is neither SameValueZero-equal nor ordered under `<`, and records
+ * which comparison modes appeared, for the cycle check. */
+function scanKeyStream(
     a: readonly unknown[],
     keyOf: Keyer,
     seen: { str: boolean; nonStr: boolean }
@@ -396,25 +418,13 @@ function scanSortedKeys(
     return false
 }
 
-/* The sorted merge assumes `<` behaves like an order on the keys at hand.
- * Two ways that fails, each sending us to the nested reference path:
- *
- * 1. Incomparability — an adjacent (here) or in-merge (the sentinel in
- *    appendSortedDifference et al.) pair with no `<` verdict either way.
- * 2. CYCLES — `<` compares two strings lexically and everything else
- *    numerically, and the two orders can disagree: '10' < '2' (lexical),
- *    '2' < 3 (numeric), 3 < '10' (numeric). Every pairwise comparison is
- *    decisive, so no sentinel can fire — yet transitivity is gone, SVZ-equal
- *    keys need not be adjacent in a validly ascending array, and the merge
- *    silently skips runs. Each order is total and transitive on its own
- *    domain, so a cycle REQUIRES both a string pair (compared lexically)
- *    and a numeric bridge — i.e. string keys mixed with non-string keys
- *    across the two streams. That mixture is exactly what we detect.
- */
-function sortedPathUnsafe(a: readonly unknown[], b: readonly unknown[], keyOf: Keyer): boolean {
+/* The up-front half of the witness: adjacent incomparability and the
+ * cycle-capable mode mixture. Cross-array incomparability stays invisible
+ * here; the merges refute that themselves. */
+function lacksMergeOrder(a: readonly unknown[], b: readonly unknown[], keyOf: Keyer): boolean {
     const seen = { str: false, nonStr: false }
-    if (scanSortedKeys(a, keyOf, seen)) return true
-    if (scanSortedKeys(b, keyOf, seen)) return true
+    if (scanKeyStream(a, keyOf, seen)) return true
+    if (scanKeyStream(b, keyOf, seen)) return true
     return seen.str && seen.nonStr
 }
 
@@ -428,15 +438,16 @@ function appendFirst(out: unknown[], a: readonly unknown[], start: number, count
     for (let i = 0; i < count; i++) out.push(a[start + i])
 }
 
-function sortedIntersection(
+/* Each merge returns null the moment the witness fails in its hands: a
+ * head pair with no order hides whether a matching partner exists further
+ * along, so partial output cannot be trusted. Skipping instead would
+ * silently lose cancellations, and set-mode union would emit duplicates. */
+function mergeIntersection(
     a: readonly unknown[],
     b: readonly unknown[],
     multiset: boolean,
     keyOf: Keyer
-): unknown[] {
-    if (sortedPathUnsafe(a, b, keyOf)) {
-        return nestedIntersection(a, b, multiset, keyOf)
-    }
+): unknown[] | null {
     const out: unknown[] = []
     let ai = 0
     let bi = 0
@@ -451,7 +462,7 @@ function sortedIntersection(
             bi = be
         } else {
             const order = compareKeys(ak, bk)
-            if (order === 0) return nestedIntersection(a, b, multiset, keyOf)
+            if (order === 0) return null
             if (order < 0) ai = runEnd(a, ai, ak, keyOf)
             else bi = runEnd(b, bi, bk, keyOf)
         }
@@ -459,13 +470,10 @@ function sortedIntersection(
     return out
 }
 
-/* Returns false when a cross-array key pair is neither SameValueZero-equal
- * nor ordered under `<` (e.g. 1 vs 'a'): the merge cannot know whether a
- * matching partner exists further along, so the caller must discard any
- * partial output and fall back to the nested reference path — exactly as
- * sortedIntersection and sortedSubset already do. Skipping instead would
- * silently lose cancellations (and even emit duplicates in set-mode union). */
-function appendSortedDifference(
+/* The one directional core behind difference, symmetric difference, and
+ * union: appends `a`'s survivors against `b` into `out`, false when the
+ * witness fails. */
+function mergeDifferenceInto(
     out: unknown[],
     a: readonly unknown[],
     b: readonly unknown[],
@@ -503,40 +511,30 @@ function appendSortedDifference(
     return true
 }
 
-function sortedDifference(
+function mergeDifference(
     a: readonly unknown[],
     b: readonly unknown[],
     multiset: boolean,
     keyOf: Keyer
-): unknown[] {
-    if (sortedPathUnsafe(a, b, keyOf)) {
-        return nestedDifference(a, b, multiset, keyOf)
-    }
+): unknown[] | null {
     const out: unknown[] = []
-    if (!appendSortedDifference(out, a, b, multiset, keyOf))
-        return nestedDifference(a, b, multiset, keyOf)
-    return out
+    return mergeDifferenceInto(out, a, b, multiset, keyOf) ? out : null
 }
 
-function sortedSymmetricDifference(
+function mergeSymmetricDifference(
     a: readonly unknown[],
     b: readonly unknown[],
     multiset: boolean,
     keyOf: Keyer
-): unknown[] {
-    if (sortedPathUnsafe(a, b, keyOf)) {
-        return nestedSymmetricDifference(a, b, multiset, keyOf)
-    }
+): unknown[] | null {
     const out: unknown[] = []
-    if (
-        !appendSortedDifference(out, a, b, multiset, keyOf) ||
-        !appendSortedDifference(out, b, a, multiset, keyOf)
-    )
-        return nestedSymmetricDifference(a, b, multiset, keyOf)
-    return out
+    return mergeDifferenceInto(out, a, b, multiset, keyOf) &&
+        mergeDifferenceInto(out, b, a, multiset, keyOf)
+        ? out
+        : null
 }
 
-function appendSortedUnique(out: unknown[], a: readonly unknown[], keyOf: Keyer): void {
+function appendRunHeads(out: unknown[], a: readonly unknown[], keyOf: Keyer): void {
     let i = 0
     while (i < a.length) {
         out.push(a[i])
@@ -544,32 +542,24 @@ function appendSortedUnique(out: unknown[], a: readonly unknown[], keyOf: Keyer)
     }
 }
 
-function sortedUnion(
+function mergeUnion(
     a: readonly unknown[],
     b: readonly unknown[],
     multiset: boolean,
     keyOf: Keyer
-): unknown[] {
-    if (sortedPathUnsafe(a, b, keyOf)) {
-        return nestedUnion(a, b, multiset, keyOf)
-    }
+): unknown[] | null {
     const out: unknown[] = []
     if (multiset) appendFirst(out, a, 0, a.length)
-    else appendSortedUnique(out, a, keyOf)
-    if (!appendSortedDifference(out, b, a, multiset, keyOf))
-        return nestedUnion(a, b, multiset, keyOf)
-    return out
+    else appendRunHeads(out, a, keyOf)
+    return mergeDifferenceInto(out, b, a, multiset, keyOf) ? out : null
 }
 
-function sortedSubset(
+function mergeSubset(
     a: readonly unknown[],
     b: readonly unknown[],
     multiset: boolean,
     keyOf: Keyer
-): boolean {
-    if (sortedPathUnsafe(a, b, keyOf)) {
-        return nestedSubset(a, b, multiset, keyOf)
-    }
+): boolean | null {
     let ai = 0
     let bi = 0
     while (ai < a.length && bi < b.length) {
@@ -583,7 +573,7 @@ function sortedSubset(
             bi = be
         } else {
             const order = compareKeys(ak, bk)
-            if (order === 0) return nestedSubset(a, b, multiset, keyOf)
+            if (order === 0) return null
             if (order < 0) return false
             bi = runEnd(b, bi, bk, keyOf)
         }
@@ -591,15 +581,15 @@ function sortedSubset(
     return ai === a.length
 }
 
-function sortedContentsEqual(
+/* Never refutes: it consults only SameValueZero. Once the up-front witness
+ * holds, differing heads of two ascending arrays settle the question — the
+ * smaller (or unordered) head cannot reappear in the other stream. */
+function mergeContentsEqual(
     a: readonly unknown[],
     b: readonly unknown[],
     multiset: boolean,
     keyOf: Keyer
 ): boolean {
-    if (sortedPathUnsafe(a, b, keyOf)) {
-        return nestedContentsEqual(a, b, multiset, keyOf)
-    }
     if (multiset && a.length !== b.length) return false
     let ai = 0
     let bi = 0
@@ -614,6 +604,68 @@ function sortedContentsEqual(
         bi = be
     }
     return ai === a.length && bi === b.length
+}
+
+function sortedIntersection(
+    a: readonly unknown[],
+    b: readonly unknown[],
+    multiset: boolean,
+    keyOf: Keyer
+): unknown[] {
+    const merged = lacksMergeOrder(a, b, keyOf) ? null : mergeIntersection(a, b, multiset, keyOf)
+    return merged ?? nestedIntersection(a, b, multiset, keyOf)
+}
+
+function sortedDifference(
+    a: readonly unknown[],
+    b: readonly unknown[],
+    multiset: boolean,
+    keyOf: Keyer
+): unknown[] {
+    const merged = lacksMergeOrder(a, b, keyOf) ? null : mergeDifference(a, b, multiset, keyOf)
+    return merged ?? nestedDifference(a, b, multiset, keyOf)
+}
+
+function sortedSymmetricDifference(
+    a: readonly unknown[],
+    b: readonly unknown[],
+    multiset: boolean,
+    keyOf: Keyer
+): unknown[] {
+    const merged = lacksMergeOrder(a, b, keyOf)
+        ? null
+        : mergeSymmetricDifference(a, b, multiset, keyOf)
+    return merged ?? nestedSymmetricDifference(a, b, multiset, keyOf)
+}
+
+function sortedUnion(
+    a: readonly unknown[],
+    b: readonly unknown[],
+    multiset: boolean,
+    keyOf: Keyer
+): unknown[] {
+    const merged = lacksMergeOrder(a, b, keyOf) ? null : mergeUnion(a, b, multiset, keyOf)
+    return merged ?? nestedUnion(a, b, multiset, keyOf)
+}
+
+function sortedSubset(
+    a: readonly unknown[],
+    b: readonly unknown[],
+    multiset: boolean,
+    keyOf: Keyer
+): boolean {
+    const merged = lacksMergeOrder(a, b, keyOf) ? null : mergeSubset(a, b, multiset, keyOf)
+    return merged ?? nestedSubset(a, b, multiset, keyOf)
+}
+
+function sortedContentsEqual(
+    a: readonly unknown[],
+    b: readonly unknown[],
+    multiset: boolean,
+    keyOf: Keyer
+): boolean {
+    const merged = lacksMergeOrder(a, b, keyOf) ? null : mergeContentsEqual(a, b, multiset, keyOf)
+    return merged ?? nestedContentsEqual(a, b, multiset, keyOf)
 }
 
 /*
