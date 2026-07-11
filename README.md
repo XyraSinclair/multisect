@@ -57,7 +57,11 @@ Element order and provenance are fixed:
 - `sorted: true` asserts that both inputs ascend under `<` on their values, or
   on keys from `by`. The merge paths produce results **identical** to the
   unsorted paths on sorted inputs. multisect never mutates, copies-and-sorts,
-  or silently repairs an input.
+  or silently repairs an input. One consequence to know: mixing string keys
+  with non-string keys forfeits the merge path — JavaScript `<` can form
+  comparison cycles across its lexical and numeric modes (`'10' < '2' < 3 <
+  '10'`), so such inputs are routed to a correct but quadratic reference
+  path. Keep sorted keys single-typed for the fast merge.
 
 Sparse-array holes are read as `undefined`, exactly like indexed access and
 array iteration. Inputs may be readonly. A `by` function is expected to return
