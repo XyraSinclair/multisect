@@ -12,7 +12,7 @@ type Keyer = (value: unknown) => unknown
 
 /* Measured on Node 24.13.1 / Apple Silicon by `npm run bench`: below this
  * amount of pair work, nested scans avoid the Map/Set construction cost. */
-const TINY_PAIR_WORK = 200
+const TINY_PAIR_WORK = 160
 
 const identity: Keyer = (value) => value
 
