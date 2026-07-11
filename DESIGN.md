@@ -86,70 +86,88 @@ and then performs `b - a`. These directional passes are necessary: a textbook
 sorted union would return global sort order, violating the required
 `unique(a.concat(b))` provenance.
 
-JavaScript `<` is not a total order. `NaN`, distinct objects, and values such
-as `3` and `'3'` can be SameValueZero-distinct while neither is less than the
-other. Adjacent ambiguous keys trigger an allocation-free nested fallback
-before the merge starts. Cross-array ambiguity is subtler: an input like
-`[1, '2', 'a']` is validly ascending pairwise, yet `1` vs `'a'` is
-incomparable — so every merge (`intersection`, the `difference` core that
-also serves `symmetricDifference` and `union`, and the subset walk) treats
-an in-merge comparison that is neither SameValueZero-equal nor ordered as a
-failure sentinel, discards any partial output, and falls back to the nested
-reference path. Skipping instead would silently lose cancellations (this was
-a real bug caught in adversarial review: sorted `difference([1,'2','a'],
-['a'])` returned all three elements, and set-mode union emitted a
-duplicate). This preserves the sorted-equals-unsorted promise without
-allocating a hash table.
+Ascending inputs are not enough, because JavaScript `<` is not a total
+order. The merges additionally require a **merge order**: `<` must behave
+as a strict total order, up to SameValueZero, on the keys actually present.
+That is what makes equal keys contiguous runs and head comparisons decisive
+about everything that follows. `<` can fail to provide it in two ways.
 
-There is a third, deeper failure the sentinel cannot see: `<` contains
-**cycles** across its two comparison modes. Strings compare lexically,
-everything else numerically, and the orders can disagree — `'10' < '2'`
-(lexical), `'2' < 3` (numeric), `3 < '10'` (numeric). Every pairwise
-comparison is decisive, so neither the adjacency scan nor the in-merge
-sentinel fires, yet transitivity is gone: SameValueZero-equal keys need not
-be adjacent in a validly ascending array (breaking run-based dedup even
-against an empty other side), and "a's head < b's head" no longer implies
-anything about the rest of b (caught in adversarial review round 2). Each
-mode is total and transitive on its own domain, so a cycle requires string
-keys *and* non-string keys together. The sorted entry points therefore
-scan once (the same pass as the adjacency check) for that mixture across
-both key streams and route it to the nested path. Ordinary all-number,
-all-string, number+bigint, and stable single-type `by` keys stay on the
-linear merge path.
+**Incomparability.** `NaN`, distinct plain objects, or `3` vs `'3'` can be
+SameValueZero-distinct while neither is less than the other. Adjacent
+incomparable keys are rejected by a linear scan before the merge starts.
+Cross-array incomparability cannot be seen cheaply up front — `[1, '2',
+'a']` is validly ascending pairwise, yet `1` vs `'a'` has no verdict — so
+every merge treats an unordered head pair as a refutation, discards its
+partial output, and falls back. Skipping the pair instead would silently
+lose cancellations: sorted `difference([1,'2','a'], ['a'])` once returned
+all three elements, and set-mode union emitted a duplicate (a real bug
+caught in adversarial review).
+
+**Cycles.** `<` compares two strings lexically and everything else
+numerically, and the two orders can disagree: `'10' < '2'` (lexical),
+`'2' < 3` and `3 < '10'` (numeric). Every pairwise verdict is decisive, so
+no refutation can fire mid-merge — yet transitivity is gone, equal keys
+need not be contiguous in a validly ascending array, and the merge would
+skip runs (caught in review round 2). Worse, which order a key joins
+follows from its ToPrimitive result, not its typeof: arrays stringify, so
+with `x = [10]` the chain `x < [2] < 3 < x` cycles with no string key
+anywhere (caught in the beautification pass — it evaded the original
+typeof-based gate). Symbols are a last corner in the same wall: `<` throws
+on them, and a singleton smuggles one past any adjacency check.
+
+The up-front witness scan therefore classifies each key's comparison mode:
+lexical (strings), numeric (numbers, bigints, booleans, `null`,
+`undefined`), or opaque (objects, functions, symbols). Opaque keys refuse
+the merge outright — no cheap certificate covers them. A lexical + numeric
+mixture across the two key streams refuses as well, since a cycle needs
+both orders at once. Primitive keys in a single mode cannot cycle: each
+mode is total and transitive on its own domain, and its incomparable cases
+(`NaN`, `undefined`, ties like `true` vs `1`) are caught by the adjacency
+scan or the in-merge refutation. All-number, all-string, number+bigint,
+and stable primitive `by` keys stay on the linear merge path.
 
 Sorted merge time is `O(m + n)` and result space is the only required
-allocation. The ambiguity fallback is quadratic, intentionally, because the
-asserted comparison relation did not provide a usable merge order.
+allocation. The fallback is quadratic, intentionally, because the asserted
+comparison relation did not provide a usable merge order.
 
 ## 5. Correctness argument
 
-For an unsorted key `x`, each path computes one of four target counts:
+The spine is one table and one rule. For a key `x` with `Ax` occurrences in
+`a` and `Bx` in `b`, each operation owes exactly one target count:
 
-| operation | target count |
-|---|---:|
-| intersection | `min(Ax, Bx)` |
-| difference `a - b` | `max(0, Ax - Bx)` |
-| symmetric difference | `abs(Ax - Bx)` |
-| union | `max(Ax, Bx)` |
+| operation | target count | owner |
+|---|---:|---|
+| intersection | `min(Ax, Bx)` | `a` |
+| difference `a - b` | `max(0, Ax - Bx)` | `a` |
+| symmetric difference | `abs(Ax - Bx)` | `a`, then `b` |
+| union | `max(Ax, Bx)` | all of `a`, then `b` |
 
-Walking the owner array from left to right and stopping after the target count
-selects exactly its first required occurrences. Set deletion/addition is the
-count-one specialization of the same argument.
+**Owner rule.** Walk the owner array left to right and stop after the target
+count — that selects exactly the first required occurrences. Symmetric
+difference concatenates its two ownership passes; union owns all of `a` and
+takes only the missing copies from `b`. Set mode is the same argument with
+counts clamped to one. Subset consumes at most the available count of each
+key, superset reverses the arguments, and contents equality is mutual
+containment or exact count exhaustion.
 
-On sorted inputs, equal keys form contiguous runs whenever `<` supplies the
-asserted order — and pairwise-ascending does NOT by itself imply `<`
-supplies an order (the cycle case above), which is exactly why the
-type-mix gate exists. On the key domains that reach the merge, `<` is
-total and transitive, runs are contiguous, and the merge compares the same
-`Ax` and `Bx` run lengths, then applies the same target formula and owner
-rule. If `<` exposes an equivalence that is not SameValueZero, or refuses
-to order a cross-array pair, the nested path evaluates membership
-directly. Therefore changing `sorted` cannot change a result on inputs
-satisfying the contract.
+Every path must realize this table. The nested paths compute `Ax` and `Bx`
+by direct scanning — they are the table transcribed, which is why they are
+also the fallback. The map paths compute the same counts in one hash-table
+pass. The sorted paths rest on a lemma:
 
-Subset consumes at most the available count of each key; set subset only asks
-for membership. Superset reverses the arguments. Contents equality is mutual
-set containment or exact multiset count exhaustion.
+**Lemma (merge safety).** The merge runs only when `<` is a strict total
+order, up to SameValueZero, on the keys present. On such a domain, equal
+keys form contiguous runs in an ascending array, so run lengths are the
+same `Ax` and `Bx`, and the merge applies the same target formula and
+owner rule.
+
+The lemma's hypothesis is witnessed in two stages (§4): comparison modes
+and adjacent pairs up front, cross-array pairs during the merge itself.
+Pairwise-ascending alone does not imply the hypothesis — that is the cycle
+counterexample — which is exactly the gap the mode classification closes.
+Whenever either stage refutes the witness, the nested path answers by
+direct membership, never consulting `<`. Therefore changing `sorted`
+cannot change a result on inputs satisfying the contract.
 
 ## 6. Verification architecture
 
@@ -162,11 +180,15 @@ contract. The suite includes:
   duplicates, and objects by identity;
 - 2,000 seeded `by` cases with colliding keys and 300 cases crossing the
   adaptive boundary;
-- 2,000 sorted-vs-unsorted numeric cases and 500 sorted object-key cases;
+- 2,000 sorted-vs-unsorted numeric cases, 500 sorted object-key cases, and
+  2,000 mixed-type valid-ascending fuzz cases whose pool makes cross-array
+  incomparability and comparison cycles common;
 - duplicate-free set/multiset equivalence, multiset containment, and
   result-is-subsequence properties;
-- empty, all-duplicate, sparse, ambiguous-comparison, provenance, and readonly
-  TypeScript batteries.
+- empty, all-duplicate, sparse, provenance, and readonly TypeScript
+  batteries, plus exact pins for every historical sorted-path wrong answer:
+  cross-array incomparability, string/number cycles, array-key cycles, and
+  symbol keys.
 
 All pseudo-random tests use in-file Mulberry32 generators with literal seeds.
 No verdict depends on `Math.random`.
