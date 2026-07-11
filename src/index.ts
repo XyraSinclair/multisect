@@ -28,6 +28,15 @@ function isTiny(a: readonly unknown[], b: readonly unknown[]): boolean {
     return a.length > 0 && b.length > 0 && a.length * b.length <= TINY_PAIR_WORK
 }
 
+/* union/symmetricDifference scan both directions, so their nested work is
+ * O((m+n)²), not O(m·n) — an asymmetric pair like (160, 1) passes the m·n
+ * gate yet does 160× the pair work of the map path. Gate them on the
+ * square of the total size instead. */
+function isTinyBoth(a: readonly unknown[], b: readonly unknown[]): boolean {
+    const n = a.length + b.length
+    return a.length > 0 && b.length > 0 && n * n <= TINY_PAIR_WORK
+}
+
 function hasKey(a: readonly unknown[], key: unknown, keyOf: Keyer): boolean {
     for (let i = 0; i < a.length; i++) {
         if (sameValueZero(keyOf(a[i]), key)) return true
@@ -342,10 +351,12 @@ function compareKeys(a: unknown, b: unknown): -1 | 0 | 1 {
 }
 
 function hasAmbiguousAdjacent(a: readonly unknown[], keyOf: Keyer): boolean {
+    if (a.length === 0) return false
+    let previous = keyOf(a[0])
     for (let i = 1; i < a.length; i++) {
-        const previous = keyOf(a[i - 1])
         const current = keyOf(a[i])
         if (!sameValueZero(previous, current) && compareKeys(previous, current) === 0) return true
+        previous = current
     }
     return false
 }
@@ -391,13 +402,19 @@ function sortedIntersection(
     return out
 }
 
+/* Returns false when a cross-array key pair is neither SameValueZero-equal
+ * nor ordered under `<` (e.g. 1 vs 'a'): the merge cannot know whether a
+ * matching partner exists further along, so the caller must discard any
+ * partial output and fall back to the nested reference path — exactly as
+ * sortedIntersection and sortedSubset already do. Skipping instead would
+ * silently lose cancellations (and even emit duplicates in set-mode union). */
 function appendSortedDifference(
     out: unknown[],
     a: readonly unknown[],
     b: readonly unknown[],
     multiset: boolean,
     keyOf: Keyer
-): void {
+): boolean {
     let ai = 0
     let bi = 0
     while (ai < a.length && bi < b.length) {
@@ -409,11 +426,15 @@ function appendSortedDifference(
             if (multiset) appendFirst(out, a, ai, Math.max(0, ae - ai - (be - bi)))
             ai = ae
             bi = be
-        } else if (compareKeys(ak, bk) < 0) {
-            appendFirst(out, a, ai, multiset ? ae - ai : 1)
-            ai = ae
         } else {
-            bi = runEnd(b, bi, bk, keyOf)
+            const order = compareKeys(ak, bk)
+            if (order === 0) return false
+            if (order < 0) {
+                appendFirst(out, a, ai, multiset ? ae - ai : 1)
+                ai = ae
+            } else {
+                bi = runEnd(b, bi, bk, keyOf)
+            }
         }
     }
     while (ai < a.length) {
@@ -422,6 +443,7 @@ function appendSortedDifference(
         appendFirst(out, a, ai, multiset ? end - ai : 1)
         ai = end
     }
+    return true
 }
 
 function sortedDifference(
@@ -434,7 +456,8 @@ function sortedDifference(
         return nestedDifference(a, b, multiset, keyOf)
     }
     const out: unknown[] = []
-    appendSortedDifference(out, a, b, multiset, keyOf)
+    if (!appendSortedDifference(out, a, b, multiset, keyOf))
+        return nestedDifference(a, b, multiset, keyOf)
     return out
 }
 
@@ -448,8 +471,11 @@ function sortedSymmetricDifference(
         return nestedSymmetricDifference(a, b, multiset, keyOf)
     }
     const out: unknown[] = []
-    appendSortedDifference(out, a, b, multiset, keyOf)
-    appendSortedDifference(out, b, a, multiset, keyOf)
+    if (
+        !appendSortedDifference(out, a, b, multiset, keyOf) ||
+        !appendSortedDifference(out, b, a, multiset, keyOf)
+    )
+        return nestedSymmetricDifference(a, b, multiset, keyOf)
     return out
 }
 
@@ -473,7 +499,8 @@ function sortedUnion(
     const out: unknown[] = []
     if (multiset) appendFirst(out, a, 0, a.length)
     else appendSortedUnique(out, a, keyOf)
-    appendSortedDifference(out, b, a, multiset, keyOf)
+    if (!appendSortedDifference(out, b, a, multiset, keyOf))
+        return nestedUnion(a, b, multiset, keyOf)
     return out
 }
 
@@ -580,7 +607,7 @@ export function symmetricDifference<A, B>(
     const rawB = b as readonly unknown[]
     const out = opts.sorted
         ? sortedSymmetricDifference(rawA, rawB, multiset, keyOf)
-        : isTiny(rawA, rawB)
+        : isTinyBoth(rawA, rawB)
           ? nestedSymmetricDifference(rawA, rawB, multiset, keyOf)
           : mapSymmetricDifference(rawA, rawB, multiset, keyOf)
     return out as (A | B)[]
@@ -598,7 +625,7 @@ export function union<A, B>(
     const rawB = b as readonly unknown[]
     const out = opts.sorted
         ? sortedUnion(rawA, rawB, multiset, keyOf)
-        : isTiny(rawA, rawB)
+        : isTinyBoth(rawA, rawB)
           ? nestedUnion(rawA, rawB, multiset, keyOf)
           : mapUnion(rawA, rawB, multiset, keyOf)
     return out as (A | B)[]

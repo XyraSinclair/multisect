@@ -353,6 +353,61 @@ describe('edge contracts', () => {
         expectSameArray(union(b, a, { multiset: true, by }), b.concat(a.slice(0, 1)))
     })
 
+    it('falls back when a CROSS-array pair is incomparable but has a match elsewhere', () => {
+        // [1,'2','a'] is validly ascending pairwise (1 < '2' numeric,
+        // '2' < 'a' string), yet 1 vs 'a' is incomparable — the merge must
+        // not silently skip b's run and lose the cancellation.
+        const a = [1, '2', 'a']
+        const b = ['a']
+        for (const multiset of [false, true]) {
+            const plain = { multiset }
+            const sorted = { multiset, sorted: true }
+            expectSameArray(difference(a, b, sorted), difference(a, b, plain))
+            expectSameArray(symmetricDifference(a, b, sorted), symmetricDifference(a, b, plain))
+            expectSameArray(union(b, a, sorted), union(b, a, plain))
+            expectSameArray(union(a, b, sorted), union(a, b, plain))
+        }
+        // The historical wrong answers, pinned exactly:
+        expect(difference(a, b, { sorted: true })).toEqual([1, '2'])
+        expect(union(b, a, { sorted: true })).toEqual(['a', 1, '2'])
+    })
+
+    it('sorted paths match unsorted paths across mixed-type valid-ascending fuzz', () => {
+        // Seeded LCG; the pool interleaves numbers and strings so pairwise-
+        // ascending sequences with cross-array incomparable pairs are common.
+        let seed = 0xc0ffee
+        const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0), seed / 2 ** 32)
+        const svz = (x: unknown, y: unknown) => x === y || (x !== x && y !== y)
+        // The sorted contract: each adjacent pair ascends under `<` (or is
+        // SameValueZero-equal). Sorting with an inconsistent comparator can
+        // violate that, so generate-and-filter instead.
+        const isValidAscending = (xs: unknown[]) =>
+            xs.every(
+                (x, i) => i === 0 || svz(xs[i - 1], x) || (xs[i - 1] as never) < (x as never)
+            )
+        const pool = [1, 2, 3, '2', '3', 'a', 'b']
+        const pick = (n: number): unknown[] => {
+            for (;;) {
+                const xs = Array.from({ length: n }, () => pool[(rnd() * pool.length) | 0]).sort()
+                if (isValidAscending(xs)) return xs
+                n = (n * 3) >> 2 // shrink until a valid arrangement appears
+            }
+        }
+        for (let trial = 0; trial < 2000; trial++) {
+            const a = pick((rnd() * 6) | 0)
+            const b = pick((rnd() * 6) | 0)
+            const multiset = rnd() < 0.5
+            const plain = { multiset }
+            const sorted = { multiset, sorted: true }
+            expectSameArray(intersection(a, b, sorted), intersection(a, b, plain))
+            expectSameArray(difference(a, b, sorted), difference(a, b, plain))
+            expectSameArray(symmetricDifference(a, b, sorted), symmetricDifference(a, b, plain))
+            expectSameArray(union(a, b, sorted), union(a, b, plain))
+            expect(isSubset(a, b, sorted)).toBe(isSubset(a, b, plain))
+            expect(contentsEqual(a, b, sorted)).toBe(contentsEqual(a, b, plain))
+        }
+    })
+
     it('keeps sorted paths correct for NaN and comparison-equivalent non-equals', () => {
         const cases: [unknown[], unknown[]][] = [
             [[NaN, 1], [1, NaN]],

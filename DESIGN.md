@@ -60,11 +60,17 @@ Silicon produced:
 | 20 × 20 | 400 | 0.372µs | 0.372µs | Set |
 | 24 × 24 | 576 | 0.556µs | 0.346µs | Set |
 
-The cutoff is therefore `a.length * b.length <= 160`. Duplicate-heavy inputs
-favor nested scans beyond that boundary, but choosing the conservative
-unique-disjoint crossover prevents a quadratic surprise. Empty-input cases do
-not enter the pair-work shortcut, avoiding the `0 × huge` trap. `unique` uses
-the analogous `length² <= 160` test.
+The cutoff is therefore `a.length * b.length <= 160` for intersection,
+difference, and the subset family, whose nested work is one-directional
+`O(m·n)`. `union` and `symmetricDifference` scan both directions, so their
+nested work is `O((m+n)²)` — an asymmetric `(160, 1)` pair passes the `m·n`
+gate while doing ~160× the pair work of the map path (measured: 36µs nested
+vs 2.9µs map for exactly that shape). They therefore gate on
+`(m+n)² <= 160`. Duplicate-heavy inputs favor nested scans beyond these
+boundaries, but choosing the conservative unique-disjoint crossover prevents
+a quadratic surprise. Empty-input cases do not enter the pair-work shortcut,
+avoiding the `0 × huge` trap. `unique` uses the analogous `length² <= 160`
+test.
 
 ## 4. Sorted merge paths
 
@@ -82,11 +88,19 @@ sorted union would return global sort order, violating the required
 
 JavaScript `<` is not a total order. `NaN`, distinct objects, and values such
 as `3` and `'3'` can be SameValueZero-distinct while neither is less than the
-other. Adjacent ambiguous keys trigger an allocation-free nested fallback; a
-cross-array ambiguous comparison does the same wherever matching could be
-affected. This preserves the sorted-equals-unsorted promise without allocating
-a hash table. Ordinary number, string, bigint, and stable `by` keys stay on the
-linear merge path.
+other. Adjacent ambiguous keys trigger an allocation-free nested fallback
+before the merge starts. Cross-array ambiguity is subtler: an input like
+`[1, '2', 'a']` is validly ascending pairwise, yet `1` vs `'a'` is
+incomparable — so every merge (`intersection`, the `difference` core that
+also serves `symmetricDifference` and `union`, and the subset walk) treats
+an in-merge comparison that is neither SameValueZero-equal nor ordered as a
+failure sentinel, discards any partial output, and falls back to the nested
+reference path. Skipping instead would silently lose cancellations (this was
+a real bug caught in adversarial review: sorted `difference([1,'2','a'],
+['a'])` returned all three elements, and set-mode union emitted a
+duplicate). This preserves the sorted-equals-unsorted promise without
+allocating a hash table. Ordinary number, string, bigint, and stable `by`
+keys stay on the linear merge path.
 
 Sorted merge time is `O(m + n)` and result space is the only required
 allocation. The ambiguity fallback is quadratic, intentionally, because the
