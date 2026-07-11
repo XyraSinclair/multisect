@@ -76,27 +76,38 @@ implementation at 100k rather than waiting on a misleading run.
 
 | operation | workload | **multisect** | lodash | es-toolkit/compat | naive `filter+includes` |
 |---|---|---:|---:|---:|---:|
-| intersection | SMIs, 10 | **0.025µs** | 0.150µs | 0.285µs | 0.158µs |
-| intersection | SMIs, 100 | **1.73µs** | 2.88µs | 2.72µs | 3.29µs |
-| intersection | SMIs, 1k | **18.9µs** | 35.6µs | 27.6µs | 205µs |
-| difference | SMIs, 1k | 20.5µs | 18.5µs | **16.0µs** | 204µs |
-| symmetric difference | SMIs, 1k | **39.7µs** | 48.7µs | 60.5µs | 457µs |
-| union | SMIs, 1k | **25.8µs** | 33.2µs | 29.4µs | 254µs |
-| intersection | SMIs, 100k | **5,658µs** | 6,429µs | 9,102µs | — |
-| intersection | strings, 1k | **21.2µs** | 83.5µs | 37.7µs | 4,531µs |
-| intersection | objects + `by`, 1k | **24.9µs** | 51.7µs | 38.9µs | 590µs |
-| intersection | duplicate-heavy, 1k | **12.3µs** | 27.3µs | 13.4µs | 37.5µs |
-| intersection | pre-sorted SMIs, 100k | **548µs** | 8,070µs | 8,759µs | — |
-| difference | pre-sorted SMIs, 100k | **654µs** | 5,118µs | 6,049µs | — |
-| symmetric difference | pre-sorted SMIs, 100k | **1,101µs** | 12,048µs | 15,591µs | — |
-| union | pre-sorted SMIs, 100k | **1,164µs** | 8,856µs | 8,218µs | — |
+| intersection | SMIs, 10 | **0.026µs** | 0.151µs | 0.316µs | 0.167µs |
+| symmetric difference | SMIs, 10 | 0.444µs | **0.241µs** | 0.569µs | 0.430µs |
+| union | SMIs, 10 | 0.281µs | 0.169µs | 0.311µs | **0.167µs** |
+| intersection | SMIs, 100 | **1.80µs** | 2.89µs | 3.03µs | 3.41µs |
+| intersection | SMIs, 1k | **16.9µs** | 29.5µs | 28.4µs | 200µs |
+| difference | SMIs, 1k | 19.5µs | 17.8µs | **16.9µs** | 206µs |
+| symmetric difference | SMIs, 1k | **50.4µs** | 52.5µs | 64.1µs | 460µs |
+| union | SMIs, 1k | **27.4µs** | 34.3µs | 29.4µs | 256µs |
+| intersection | SMIs, 100k | 6,386µs | **6,378µs** | 8,828µs | — |
+| difference | SMIs, 100k | 7,230µs | **3,871µs** | 6,624µs | — |
+| symmetric difference | SMIs, 100k | 12,834µs | **9,149µs** | 18,394µs | — |
+| intersection | strings, 1k | **21.0µs** | 84.3µs | 41.2µs | 4,756µs |
+| intersection | objects + `by`, 1k | **24.4µs** | 49.2µs | 39.3µs | 600µs |
+| intersection | duplicate-heavy, 1k | 13.2µs | 27.5µs | **12.1µs** | 29.2µs |
+| symmetric difference | duplicate-heavy, 1k | 23.7µs | 51.8µs | **13.5µs** | 60.0µs |
+| intersection | pre-sorted SMIs, 100k | **553µs** | 8,330µs | 9,622µs | — |
+| difference | pre-sorted SMIs, 100k | **580µs** | 4,925µs | 6,276µs | — |
+| symmetric difference | pre-sorted SMIs, 100k | **1,095µs** | 11,851µs | 15,727µs | — |
+| union | pre-sorted SMIs, 100k | **1,146µs** | 8,230µs | 9,414µs | — |
 
-The generic difference path loses to both incumbents at 1k and to lodash at
-100k. It computes survivor counts before emitting so it can keep the first
-occurrences required by the contract; lodash and es-toolkit do less work for
-their narrower set-only behavior. Symmetric difference inherits two such
-passes. This is an accepted cost. Sorted inputs avoid the hash tables and are
-roughly 7–16× faster than the generic incumbents in this run.
+The losses are shown, and they have reasons. The generic difference path
+loses (roughly ties es-toolkit at 1k, loses ~1.9× to lodash at 100k)
+because it computes survivor counts before emitting so it can keep the
+first occurrences the contract promises; symmetric difference inherits two
+such passes. Duplicate-heavy symmetric difference loses to es-toolkit's
+narrower set-only behavior for the same reason. The 10-element union and
+symmetric-difference rows lose because those operations gate their nested
+tiny path on `(m+n)² ≤ 160` — the honest cost of never letting an
+asymmetric `(160, 1)` input pay a 12× quadratic surprise (an earlier
+`m·n` gate did exactly that; see DESIGN.md §3). Sorted inputs avoid the
+hash tables entirely and run roughly 7–15× faster than the generic
+incumbents in this run.
 
 For tiny inputs, nested scans avoid a Map/Set allocation. The unique-disjoint
 worst-case crossover was between 144 and 196 pair comparisons on this runtime,
