@@ -238,6 +238,7 @@ for (const size of [8, 12, 14, 16, 20, 24]) {
 }
 
 console.log()
-console.log(`counted duplicate-heavy intersection, n=1,000: ${formatMicros(measure(() => intersection(workloads[6].a, workloads[6].b, { multiset: true })))} µs (incumbents have no equivalent operation)`)
+const duplicateHeavy = workloads.find((workload) => workload.name.startsWith('duplicate-heavy'))
+console.log(`counted duplicate-heavy intersection, n=1,000: ${formatMicros(measure(() => intersection(duplicateHeavy.a, duplicateHeavy.b, { multiset: true })))} µs (incumbents have no equivalent operation)`)
 // Make it difficult for an optimizing runtime to erase benchmark calls.
 if (sink === Number.MIN_VALUE) console.log(sink)
