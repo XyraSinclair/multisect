@@ -99,8 +99,23 @@ reference path. Skipping instead would silently lose cancellations (this was
 a real bug caught in adversarial review: sorted `difference([1,'2','a'],
 ['a'])` returned all three elements, and set-mode union emitted a
 duplicate). This preserves the sorted-equals-unsorted promise without
-allocating a hash table. Ordinary number, string, bigint, and stable `by`
-keys stay on the linear merge path.
+allocating a hash table.
+
+There is a third, deeper failure the sentinel cannot see: `<` contains
+**cycles** across its two comparison modes. Strings compare lexically,
+everything else numerically, and the orders can disagree — `'10' < '2'`
+(lexical), `'2' < 3` (numeric), `3 < '10'` (numeric). Every pairwise
+comparison is decisive, so neither the adjacency scan nor the in-merge
+sentinel fires, yet transitivity is gone: SameValueZero-equal keys need not
+be adjacent in a validly ascending array (breaking run-based dedup even
+against an empty other side), and "a's head < b's head" no longer implies
+anything about the rest of b (caught in adversarial review round 2). Each
+mode is total and transitive on its own domain, so a cycle requires string
+keys *and* non-string keys together. The sorted entry points therefore
+scan once (the same pass as the adjacency check) for that mixture across
+both key streams and route it to the nested path. Ordinary all-number,
+all-string, number+bigint, and stable single-type `by` keys stay on the
+linear merge path.
 
 Sorted merge time is `O(m + n)` and result space is the only required
 allocation. The ambiguity fallback is quadratic, intentionally, because the
@@ -122,11 +137,15 @@ selects exactly its first required occurrences. Set deletion/addition is the
 count-one specialization of the same argument.
 
 On sorted inputs, equal keys form contiguous runs whenever `<` supplies the
-asserted order. The merge compares the same `Ax` and `Bx` run lengths, then
-applies the same target formula and owner rule. If `<` exposes an equivalence
-that is not SameValueZero, the nested path evaluates membership directly.
-Therefore changing `sorted` cannot change a result on inputs satisfying the
-contract.
+asserted order — and pairwise-ascending does NOT by itself imply `<`
+supplies an order (the cycle case above), which is exactly why the
+type-mix gate exists. On the key domains that reach the merge, `<` is
+total and transitive, runs are contiguous, and the merge compares the same
+`Ax` and `Bx` run lengths, then applies the same target formula and owner
+rule. If `<` exposes an equivalence that is not SameValueZero, or refuses
+to order a cross-array pair, the nested path evaluates membership
+directly. Therefore changing `sorted` cannot change a result on inputs
+satisfying the contract.
 
 Subset consumes at most the available count of each key; set subset only asks
 for membership. Superset reverses the arguments. Contents equality is mutual

@@ -350,15 +350,48 @@ function compareKeys(a: unknown, b: unknown): -1 | 0 | 1 {
     return 0
 }
 
-function hasAmbiguousAdjacent(a: readonly unknown[], keyOf: Keyer): boolean {
+/* Scans one array's keys: returns true on an adjacent pair that is neither
+ * SameValueZero-equal nor ordered under `<`, and records whether string and
+ * non-string keys were seen (for the cross-stream type-mix gate below). */
+function scanSortedKeys(
+    a: readonly unknown[],
+    keyOf: Keyer,
+    seen: { str: boolean; nonStr: boolean }
+): boolean {
     if (a.length === 0) return false
     let previous = keyOf(a[0])
+    if (typeof previous === 'string') seen.str = true
+    else seen.nonStr = true
     for (let i = 1; i < a.length; i++) {
         const current = keyOf(a[i])
+        if (typeof current === 'string') seen.str = true
+        else seen.nonStr = true
         if (!sameValueZero(previous, current) && compareKeys(previous, current) === 0) return true
         previous = current
     }
     return false
+}
+
+/* The sorted merge assumes `<` behaves like an order on the keys at hand.
+ * Two ways that fails, each sending us to the nested reference path:
+ *
+ * 1. Incomparability — an adjacent (here) or in-merge (the sentinel in
+ *    appendSortedDifference et al.) pair with no `<` verdict either way.
+ * 2. CYCLES — `<` compares two strings lexically and everything else
+ *    numerically, and the two orders can disagree: '10' < '2' (lexical),
+ *    '2' < 3 (numeric), 3 < '10' (numeric). Every pairwise comparison is
+ *    decisive, so no sentinel can fire — yet transitivity is gone, SVZ-equal
+ *    keys need not be adjacent in a validly ascending array, and the merge
+ *    silently skips runs. Each order is total and transitive on its own
+ *    domain, so a cycle REQUIRES both a string pair (compared lexically)
+ *    and a numeric bridge — i.e. string keys mixed with non-string keys
+ *    across the two streams. That mixture is exactly what we detect.
+ */
+function sortedPathUnsafe(a: readonly unknown[], b: readonly unknown[], keyOf: Keyer): boolean {
+    const seen = { str: false, nonStr: false }
+    if (scanSortedKeys(a, keyOf, seen)) return true
+    if (scanSortedKeys(b, keyOf, seen)) return true
+    return seen.str && seen.nonStr
 }
 
 function runEnd(a: readonly unknown[], start: number, key: unknown, keyOf: Keyer): number {
@@ -377,7 +410,7 @@ function sortedIntersection(
     multiset: boolean,
     keyOf: Keyer
 ): unknown[] {
-    if (hasAmbiguousAdjacent(a, keyOf) || hasAmbiguousAdjacent(b, keyOf)) {
+    if (sortedPathUnsafe(a, b, keyOf)) {
         return nestedIntersection(a, b, multiset, keyOf)
     }
     const out: unknown[] = []
@@ -452,7 +485,7 @@ function sortedDifference(
     multiset: boolean,
     keyOf: Keyer
 ): unknown[] {
-    if (hasAmbiguousAdjacent(a, keyOf) || hasAmbiguousAdjacent(b, keyOf)) {
+    if (sortedPathUnsafe(a, b, keyOf)) {
         return nestedDifference(a, b, multiset, keyOf)
     }
     const out: unknown[] = []
@@ -467,7 +500,7 @@ function sortedSymmetricDifference(
     multiset: boolean,
     keyOf: Keyer
 ): unknown[] {
-    if (hasAmbiguousAdjacent(a, keyOf) || hasAmbiguousAdjacent(b, keyOf)) {
+    if (sortedPathUnsafe(a, b, keyOf)) {
         return nestedSymmetricDifference(a, b, multiset, keyOf)
     }
     const out: unknown[] = []
@@ -493,7 +526,7 @@ function sortedUnion(
     multiset: boolean,
     keyOf: Keyer
 ): unknown[] {
-    if (hasAmbiguousAdjacent(a, keyOf) || hasAmbiguousAdjacent(b, keyOf)) {
+    if (sortedPathUnsafe(a, b, keyOf)) {
         return nestedUnion(a, b, multiset, keyOf)
     }
     const out: unknown[] = []
@@ -510,7 +543,7 @@ function sortedSubset(
     multiset: boolean,
     keyOf: Keyer
 ): boolean {
-    if (hasAmbiguousAdjacent(a, keyOf) || hasAmbiguousAdjacent(b, keyOf)) {
+    if (sortedPathUnsafe(a, b, keyOf)) {
         return nestedSubset(a, b, multiset, keyOf)
     }
     let ai = 0
@@ -540,7 +573,7 @@ function sortedContentsEqual(
     multiset: boolean,
     keyOf: Keyer
 ): boolean {
-    if (hasAmbiguousAdjacent(a, keyOf) || hasAmbiguousAdjacent(b, keyOf)) {
+    if (sortedPathUnsafe(a, b, keyOf)) {
         return nestedContentsEqual(a, b, multiset, keyOf)
     }
     if (multiset && a.length !== b.length) return false

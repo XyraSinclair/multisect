@@ -372,6 +372,35 @@ describe('edge contracts', () => {
         expect(union(b, a, { sorted: true })).toEqual(['a', 1, '2'])
     })
 
+    it('falls back on comparison CYCLES: multi-digit numeric strings among numbers', () => {
+        // '<' has genuine cycles across the lexical and numeric orders:
+        // '10' < '2' (lexical), '2' < 3 (numeric), 3 < '10' (numeric).
+        // Every pairwise comparison is decisive, so no incomparability
+        // sentinel can fire — the type-mix gate must route these to the
+        // nested path. All inputs below are validly pairwise-ascending.
+        const cases: [unknown[], unknown[]][] = [
+            [['10', '2', 3, '10'], []],
+            [[3, '10'], ['10', '2', 3]],
+        ]
+        for (const [a, b] of cases) {
+            for (const multiset of [false, true]) {
+                const plain = { multiset }
+                const sorted = { multiset, sorted: true }
+                expectSameArray(intersection(a, b, sorted), intersection(a, b, plain))
+                expectSameArray(difference(a, b, sorted), difference(a, b, plain))
+                expectSameArray(symmetricDifference(a, b, sorted), symmetricDifference(a, b, plain))
+                expectSameArray(union(a, b, sorted), union(a, b, plain))
+                expect(isSubset(a, b, sorted)).toBe(isSubset(a, b, plain))
+                expect(contentsEqual(a, b, sorted)).toBe(contentsEqual(a, b, plain))
+            }
+        }
+        // The historical wrong answers, pinned exactly:
+        expect(difference(['10', '2', 3, '10'], [], { sorted: true })).toEqual(['10', '2', 3])
+        expect(intersection([3, '10'], ['10', '2', 3], { sorted: true })).toEqual([3, '10'])
+        expect(isSubset([3, '10'], ['10', '2', 3], { sorted: true })).toBe(true)
+        expect(union([3, '10'], ['10', '2', 3], { sorted: true })).toEqual([3, '10', '2'])
+    })
+
     it('sorted paths match unsorted paths across mixed-type valid-ascending fuzz', () => {
         // Seeded LCG; the pool interleaves numbers and strings so pairwise-
         // ascending sequences with cross-array incomparable pairs are common.
@@ -385,7 +414,9 @@ describe('edge contracts', () => {
             xs.every(
                 (x, i) => i === 0 || svz(xs[i - 1], x) || (xs[i - 1] as never) < (x as never)
             )
-        const pool = [1, 2, 3, '2', '3', 'a', 'b']
+        // 10 + '10' put lexical and numeric order in genuine conflict, so
+        // the fuzz can generate comparison cycles, not just incomparability.
+        const pool = [1, 2, 3, 10, '2', '3', '10', 'a', 'b']
         const pick = (n: number): unknown[] => {
             for (;;) {
                 const xs = Array.from({ length: n }, () => pool[(rnd() * pool.length) | 0]).sort()
