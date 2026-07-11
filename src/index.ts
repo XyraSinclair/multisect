@@ -1,3 +1,11 @@
+/*
+ * Three path families compute every operation: nested (the quadratic
+ * reference), map (hash-based, for general inputs past the tiny cutoff),
+ * and sorted (allocation-light merges behind the `sorted` assertion).
+ * They must be observably identical; the public API at the bottom only
+ * dispatches. DESIGN.md carries the correctness argument.
+ */
+
 /** Options shared by every binary operation. */
 export type Opts<T> = {
     /** Count repeated keys instead of deduplicating them. Default: false. */
@@ -24,6 +32,15 @@ function keyerFor<T>(by: Opts<T>['by']): Keyer {
     return (by as Keyer | undefined) ?? identity
 }
 
+function countsOf(a: readonly unknown[], keyOf: Keyer): Map<unknown, number> {
+    const counts = new Map<unknown, number>()
+    for (const value of a) {
+        const key = keyOf(value)
+        counts.set(key, (counts.get(key) ?? 0) + 1)
+    }
+    return counts
+}
+
 function isTiny(a: readonly unknown[], b: readonly unknown[]): boolean {
     return a.length > 0 && b.length > 0 && a.length * b.length <= TINY_PAIR_WORK
 }
@@ -36,6 +53,12 @@ function isTinyBoth(a: readonly unknown[], b: readonly unknown[]): boolean {
     const n = a.length + b.length
     return a.length > 0 && b.length > 0 && n * n <= TINY_PAIR_WORK
 }
+
+/*
+ * Nested paths — the executable reference. SameValueZero scans with no
+ * auxiliary allocation: quadratic, low constant, and correct on any input,
+ * which is why the sorted family falls back to these.
+ */
 
 function hasKey(a: readonly unknown[], key: unknown, keyOf: Keyer): boolean {
     for (let i = 0; i < a.length; i++) {
@@ -96,6 +119,88 @@ function nestedIntersection(
     return out
 }
 
+function nestedDifference(
+    a: readonly unknown[],
+    b: readonly unknown[],
+    multiset: boolean,
+    keyOf: Keyer
+): unknown[] {
+    const out: unknown[] = []
+    for (let i = 0; i < a.length; i++) {
+        const key = keyOf(a[i])
+        if (multiset) {
+            const keep = countKey(a, key, keyOf) - countKey(b, key, keyOf)
+            const occurrence = countKeyBefore(a, i, key, keyOf) + 1
+            if (occurrence <= keep) out.push(a[i])
+        } else if (!hasKeyBefore(a, i, key, keyOf) && !hasKey(b, key, keyOf)) {
+            out.push(a[i])
+        }
+    }
+    return out
+}
+
+function nestedSymmetricDifference(
+    a: readonly unknown[],
+    b: readonly unknown[],
+    multiset: boolean,
+    keyOf: Keyer
+): unknown[] {
+    return nestedDifference(a, b, multiset, keyOf).concat(
+        nestedDifference(b, a, multiset, keyOf)
+    )
+}
+
+function nestedUnion(
+    a: readonly unknown[],
+    b: readonly unknown[],
+    multiset: boolean,
+    keyOf: Keyer
+): unknown[] {
+    if (!multiset) return nestedUnique(a.concat(b), keyOf)
+    return a.slice().concat(nestedDifference(b, a, true, keyOf))
+}
+
+function nestedSubset(
+    a: readonly unknown[],
+    b: readonly unknown[],
+    multiset: boolean,
+    keyOf: Keyer
+): boolean {
+    for (let i = 0; i < a.length; i++) {
+        const key = keyOf(a[i])
+        if (multiset) {
+            if (countKeyBefore(a, i, key, keyOf) + 1 > countKey(b, key, keyOf)) return false
+        } else if (!hasKey(b, key, keyOf)) {
+            return false
+        }
+    }
+    return true
+}
+
+function nestedContentsEqual(
+    a: readonly unknown[],
+    b: readonly unknown[],
+    multiset: boolean,
+    keyOf: Keyer
+): boolean {
+    if (multiset && a.length !== b.length) return false
+    return nestedSubset(a, b, multiset, keyOf) && nestedSubset(b, a, multiset, keyOf)
+}
+
+function nestedUnique(a: readonly unknown[], keyOf: Keyer): unknown[] {
+    const out: unknown[] = []
+    for (let i = 0; i < a.length; i++) {
+        const key = keyOf(a[i])
+        if (!hasKeyBefore(a, i, key, keyOf)) out.push(a[i])
+    }
+    return out
+}
+
+/*
+ * Map/Set paths — the general workhorses. O(m + n) expected time, O(distinct
+ * keys) auxiliary space; Map and Set membership is SameValueZero natively.
+ */
+
 function mapIntersection(
     a: readonly unknown[],
     b: readonly unknown[],
@@ -121,26 +226,6 @@ function mapIntersection(
             out.push(value)
             if (count === 1) remaining.delete(key)
             else remaining.set(key, count - 1)
-        }
-    }
-    return out
-}
-
-function nestedDifference(
-    a: readonly unknown[],
-    b: readonly unknown[],
-    multiset: boolean,
-    keyOf: Keyer
-): unknown[] {
-    const out: unknown[] = []
-    for (let i = 0; i < a.length; i++) {
-        const key = keyOf(a[i])
-        if (multiset) {
-            const keep = countKey(a, key, keyOf) - countKey(b, key, keyOf)
-            const occurrence = countKeyBefore(a, i, key, keyOf) + 1
-            if (occurrence <= keep) out.push(a[i])
-        } else if (!hasKeyBefore(a, i, key, keyOf) && !hasKey(b, key, keyOf)) {
-            out.push(a[i])
         }
     }
     return out
@@ -184,17 +269,6 @@ function mapDifference(
     return out
 }
 
-function nestedSymmetricDifference(
-    a: readonly unknown[],
-    b: readonly unknown[],
-    multiset: boolean,
-    keyOf: Keyer
-): unknown[] {
-    return nestedDifference(a, b, multiset, keyOf).concat(
-        nestedDifference(b, a, multiset, keyOf)
-    )
-}
-
 function mapSymmetricDifference(
     a: readonly unknown[],
     b: readonly unknown[],
@@ -206,16 +280,6 @@ function mapSymmetricDifference(
     )
 }
 
-function nestedUnion(
-    a: readonly unknown[],
-    b: readonly unknown[],
-    multiset: boolean,
-    keyOf: Keyer
-): unknown[] {
-    if (!multiset) return nestedUnique(a.concat(b), keyOf)
-    return a.slice().concat(nestedDifference(b, a, true, keyOf))
-}
-
 function mapUnion(
     a: readonly unknown[],
     b: readonly unknown[],
@@ -224,32 +288,6 @@ function mapUnion(
 ): unknown[] {
     if (!multiset) return mapUnique(a.concat(b), keyOf)
     return a.slice().concat(mapDifference(b, a, true, keyOf))
-}
-
-function countsOf(a: readonly unknown[], keyOf: Keyer): Map<unknown, number> {
-    const counts = new Map<unknown, number>()
-    for (const value of a) {
-        const key = keyOf(value)
-        counts.set(key, (counts.get(key) ?? 0) + 1)
-    }
-    return counts
-}
-
-function nestedSubset(
-    a: readonly unknown[],
-    b: readonly unknown[],
-    multiset: boolean,
-    keyOf: Keyer
-): boolean {
-    for (let i = 0; i < a.length; i++) {
-        const key = keyOf(a[i])
-        if (multiset) {
-            if (countKeyBefore(a, i, key, keyOf) + 1 > countKey(b, key, keyOf)) return false
-        } else if (!hasKey(b, key, keyOf)) {
-            return false
-        }
-    }
-    return true
 }
 
 function mapSubset(
@@ -277,16 +315,6 @@ function mapSubset(
         else available.set(key, count - 1)
     }
     return true
-}
-
-function nestedContentsEqual(
-    a: readonly unknown[],
-    b: readonly unknown[],
-    multiset: boolean,
-    keyOf: Keyer
-): boolean {
-    if (multiset && a.length !== b.length) return false
-    return nestedSubset(a, b, multiset, keyOf) && nestedSubset(b, a, multiset, keyOf)
 }
 
 function mapContentsEqual(
@@ -317,15 +345,6 @@ function mapContentsEqual(
     return true
 }
 
-function nestedUnique(a: readonly unknown[], keyOf: Keyer): unknown[] {
-    const out: unknown[] = []
-    for (let i = 0; i < a.length; i++) {
-        const key = keyOf(a[i])
-        if (!hasKeyBefore(a, i, key, keyOf)) out.push(a[i])
-    }
-    return out
-}
-
 function mapUnique(a: readonly unknown[], keyOf: Keyer): unknown[] {
     const seen = new Set<unknown>()
     const out: unknown[] = []
@@ -338,6 +357,11 @@ function mapUnique(a: readonly unknown[], keyOf: Keyer): unknown[] {
     }
     return out
 }
+
+/*
+ * Sorted merge paths — run-based two-pointer walks behind the `sorted`
+ * assertion. No Map or Set; the result array is the only allocation.
+ */
 
 /* `0` means comparison-equivalent. The caller checks SameValueZero first, so
  * `0` can also expose values (NaN, distinct objects, 3 and '3') for which `<`
@@ -591,6 +615,11 @@ function sortedContentsEqual(
     }
     return ai === a.length && bi === b.length
 }
+
+/*
+ * Public API — dispatch only. `sorted` is an assertion the caller makes;
+ * otherwise the pair-work gates pick nested or map.
+ */
 
 /** Shared keys, represented by the winning occurrences from `a`. */
 export function intersection<A, B>(
