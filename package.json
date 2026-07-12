@@ -1,6 +1,6 @@
 {
     "name": "multisect",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "description": "Set-theoretic operations on arrays with counted multiset semantics, sorted merge paths, and explicit order contracts.",
     "keywords": [
         "array",
